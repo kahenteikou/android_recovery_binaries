@@ -1,133 +1,111 @@
-The Recovery Image
-==================
+edify
+=====
 
-Quick turn-around testing
--------------------------
+Update scripts (from donut onwards) are written in a new little
+scripting language ("edify") that is superficially somewhat similar to
+the old one ("amend").  This is a brief overview of the new language.
 
-    mm -j && m ramdisk-nodeps && m recoveryimage-nodeps
+- The entire script is a single expression.
 
-    # To boot into the new recovery image
-    # without flashing the recovery partition:
-    adb reboot bootloader
-    fastboot boot $ANDROID_PRODUCT_OUT/recovery.img
+- All expressions are string-valued.
 
-Running the tests
------------------
-    # After setting up environment and lunch.
-    mmma -j bootable/recovery
+- String literals appear in double quotes.  \n, \t, \", and \\ are
+  understood, as are hexadecimal escapes like \x4a.
 
-    # Running the tests on device.
-    adb root
-    adb sync data
+- String literals consisting of only letters, numbers, colons,
+  underscores, slashes, and periods don't need to be in double quotes.
 
-    # 32-bit device
-    adb shell /data/nativetest/recovery_unit_test/recovery_unit_test
-    adb shell /data/nativetest/recovery_component_test/recovery_component_test
+- The following words are reserved:
 
-    # Or 64-bit device
-    adb shell /data/nativetest64/recovery_unit_test/recovery_unit_test
-    adb shell /data/nativetest64/recovery_component_test/recovery_component_test
+       if    then    else   endif
 
-Running the manual tests
-------------------------
+  They have special meaning when unquoted.  (In quotes, they are just
+  string literals.)
 
-`recovery-refresh` and `recovery-persist` executables exist only on systems without
-/cache partition. And we need to follow special steps to run tests for them.
+- When used as a boolean, the empty string is "false" and all other
+  strings are "true".
 
-- Execute the test on an A/B device first. The test should fail but it will log
-  some contents to pmsg.
+- All functions are actually macros (in the Lisp sense); the body of
+  the function can control which (if any) of the arguments are
+  evaluated.  This means that functions can act as control
+  structures.
 
-- Reboot the device immediately and run the test again. The test should save the
-  contents of pmsg buffer into /data/misc/recovery/inject.txt. Test will pass if
-  this file has expected contents.
+- Operators (like "&&" and "||") are just syntactic sugar for builtin
+  functions, so they can act as control structures as well.
 
-Using `adb` under recovery
---------------------------
+- ";" is a binary operator; evaluating it just means to first evaluate
+  the left side, then the right.  It can also appear after any
+  expression.
 
-When running recovery image from debuggable builds (i.e. `-eng` or `-userdebug` build variants, or
-`ro.debuggable=1` in `/prop.default`), `adbd` service is enabled and started by default, which
-allows `adb` communication. A device should be listed under `adb devices`, either in `recovery` or
-`sideload` state.
+- Comments start with "#" and run to the end of the line.
 
-    $ adb devices
-    List of devices attached
-    1234567890abcdef    recovery
 
-Although `/system/bin/adbd` is built from the same code base as the one in the normal boot, only a
-subset of `adb` commands are meaningful under recovery, such as `adb root`, `adb shell`, `adb push`,
-`adb pull` etc. Since Android Q, `adb shell` no longer requires manually mounting `/system` from
-recovery menu.
 
-## Troubleshooting
+Some examples:
 
-### `adb devices` doesn't show the device.
+- There's no distinction between quoted and unquoted strings; the
+  quotes are only needed if you want characters like whitespace to
+  appear in the string.  The following expressions all evaluate to the
+  same string.
 
-    $ adb devices
-    List of devices attached
+     "a b"
+     a + " " + b
+     "a" + " " + "b"
+     "a\x20b"
+     a + "\x20b"
+     concat(a, " ", "b")
+     "concat"(a, " ", "b")
 
- * Ensure `adbd` is built and running.
+  As shown in the last example, function names are just strings,
+  too.  They must be string *literals*, however.  This is not legal:
 
-By default, `adbd` is always included into recovery image, as `/system/bin/adbd`. `init` starts
-`adbd` service automatically only in debuggable builds. This behavior is controlled by the recovery
-specific `/init.rc`, whose source code is at `bootable/recovery/etc/init.rc`.
+     ("con" + "cat")(a, " ", b)         # syntax error!
 
-The best way to confirm a running `adbd` is by checking the serial output, which shows a service
-start log as below.
 
-    [   18.961986] c1      1 init: starting service 'adbd'...
+- The ifelse() builtin takes three arguments:  it evaluates exactly
+  one of the second and third, depending on whether the first one is
+  true.  There is also some syntactic sugar to make expressions that
+  look like if/else statements:
 
- * Ensure USB gadget has been enabled.
+     # these are all equivalent
+     ifelse(something(), "yes", "no")
+     if something() then yes else no endif
+     if something() then "yes" else "no" endif
 
-If `adbd` service has been started but device not shown under `adb devices`, use `lsusb(8)` (on
-host) to check if the device is visible to the host.
+  The else part is optional.
 
-`bootable/recovery/etc/init.rc` disables Android USB gadget (via sysfs) as part of the `fs` action
-trigger, and will only re-enable it in debuggable builds (the `on property` rule will always run
-_after_ `on fs`).
+     if something() then "yes" endif    # if something() is false,
+                                        # evaluates to false
 
-    on fs
-        write /sys/class/android_usb/android0/enable 0
+     ifelse(condition(), "", abort())   # abort() only called if
+                                        # condition() is false
 
-    # Always start adbd on userdebug and eng builds
-    on property:ro.debuggable=1
-        write /sys/class/android_usb/android0/enable 1
-        start adbd
+  The last example is equivalent to:
 
-If device is using [configfs](https://www.kernel.org/doc/Documentation/usb/gadget_configfs.txt),
-check if configfs has been properly set up in init rc scripts. See the [example
-configuration](https://android.googlesource.com/device/google/wahoo/+/master/init.recovery.hardware.rc)
-for Pixel 2 devices. Note that the flag set via sysfs (i.e. the one above) is no-op when using
-configfs.
+     assert(condition())
 
-### `adb devices` shows the device, but in `unauthorized` state.
 
-    $ adb devices
-    List of devices attached
-    1234567890abcdef    unauthorized
+- The && and || operators can be used similarly; they evaluate their
+  second argument only if it's needed to determine the truth of the
+  expression.  Their value is the value of the last-evaluated
+  argument:
 
-recovery image doesn't honor the USB debugging toggle and the authorizations added under normal boot
-(because such authorization data stays in /data, which recovery doesn't mount), nor does it support
-authorizing a host device under recovery. We can use one of the following options instead.
+     file_exists("/data/system/bad") && delete("/data/system/bad")
 
- * **Option 1 (Recommended):** Authorize a host device with adb vendor keys.
+     file_exists("/data/system/missing") || create("/data/system/missing")
 
-For debuggable builds, an RSA keypair can be used to authorize a host device that has the private
-key. The public key, defined via `PRODUCT_ADB_KEYS`, will be copied to `/adb_keys`. When starting
-the host-side `adbd`, make sure the filename (or the directory) of the matching private key has been
-added to `$ADB_VENDOR_KEYS`.
+     get_it() || "xxx"     # returns value of get_it() if that value is
+                           # true, otherwise returns "xxx"
 
-    $ export ADB_VENDOR_KEYS=/path/to/adb/private/key
-    $ adb kill-server
-    $ adb devices
 
-`-user` builds filter out `PRODUCT_ADB_KEYS`, so no `/adb_keys` will be included there.
+- The purpose of ";" is to simulate imperative statements, of course,
+  but the operator can be used anywhere.  Its value is the value of
+  its right side:
 
-Note that this mechanism applies to both of normal boot and recovery modes.
+     concat(a;b;c, d, e;f)     # evaluates to "cdf"
 
- * **Option 2:** Allow `adbd` to connect without authentication.
-   * `adbd` is compiled with `ALLOW_ADBD_NO_AUTH` (only on debuggable builds).
-   * `ro.adb.secure` has a value of `0`.
+  A more useful example might be something like:
 
-Both of the two conditions need to be satisfied. Although `ro.adb.secure` is a runtime property, its
-value is set at build time (written into `/prop.default`). It defaults to `1` on `-user` builds, and
-`0` for other build variants. The value is overridable via `PRODUCT_DEFAULT_PROPERTY_OVERRIDES`.
+     ifelse(condition(),
+            (first_step(); second_step();),   # second ; is optional
+            alternative_procedure())
